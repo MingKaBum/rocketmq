@@ -154,6 +154,7 @@ public class NamesrvStartup {
             System.exit(-3);
         }
 
+        // JVM停止时，释放资源
         Runtime.getRuntime().addShutdownHook(new ShutdownHookThread(log, new Callable<Void>() {
             @Override
             public Void call() throws Exception {

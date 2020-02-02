@@ -117,6 +117,7 @@ public class RouteInfoManager {
         RegisterBrokerResult result = new RegisterBrokerResult();
         try {
             try {
+                // 开启写锁
                 this.lock.writeLock().lockInterruptibly();
 
                 Set<String> brokerNames = this.clusterAddrTable.get(clusterName);
@@ -437,10 +438,14 @@ public class RouteInfoManager {
         while (it.hasNext()) {
             Entry<String, BrokerLiveInfo> next = it.next();
             long last = next.getValue().getLastUpdateTimestamp();
+            // 判断每个Broker的心跳时间，如果最后心跳时间LastUpdateTimestamp+120s，小于当前时间，认为是不活跃的Broker节点，会进行删除
             if ((last + BROKER_CHANNEL_EXPIRED_TIME) < System.currentTimeMillis()) {
+                // 关闭连接
                 RemotingUtil.closeChannel(next.getValue().getChannel());
+                // 删除Broker节点
                 it.remove();
                 log.warn("The broker channel expired, {} {}ms", next.getKey(), BROKER_CHANNEL_EXPIRED_TIME);
+                // 维护其他Broker节点信息Table
                 this.onChannelDestroy(next.getKey(), next.getValue().getChannel());
             }
         }
@@ -551,6 +556,7 @@ public class RouteInfoManager {
                                 }
                             }
 
+                            // 如果Topic下没有活跃的queue，那么删除Topic
                             if (queueDataList.isEmpty()) {
                                 itTopicQueueTable.remove();
                                 log.info("remove topic[{}] all queue, from topicQueueTable, because channel destroyed",
