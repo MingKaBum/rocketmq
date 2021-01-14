@@ -1209,6 +1209,7 @@ public class BrokerController {
         }
     }
 
-
-
+    public ExecutorService getSendMessageExecutor() {
+        return sendMessageExecutor;
+    }
 }

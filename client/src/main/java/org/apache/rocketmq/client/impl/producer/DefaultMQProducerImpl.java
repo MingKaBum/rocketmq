@@ -222,7 +222,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                 if (shutdownFactory) {
                     this.mQClientFactory.shutdown();
                 }
-
+                this.timer.cancel();
                 log.info("the producer [{}] shutdown OK", this.defaultMQProducer.getProducerGroup());
                 this.serviceState = ServiceState.SHUTDOWN_ALREADY;
                 break;
@@ -385,6 +385,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
     public void createTopic(String key, String newTopic, int queueNum, int topicSysFlag) throws MQClientException {
         this.makeSureStateOK();
         Validators.checkTopic(newTopic);
+        Validators.isSystemTopic(newTopic);
 
         this.mQClientFactory.getMQAdminImpl().createTopic(key, newTopic, queueNum, topicSysFlag);
     }
@@ -1083,7 +1084,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
 
                 mq = mQClientFactory.getClientConfig().queueWithNamespace(selector.select(messageQueueList, userMessage, arg));
             } catch (Throwable e) {
-                throw new MQClientException("select message queue throwed exception.", e);
+                throw new MQClientException("select message queue threw exception.", e);
             }
 
             long costTime = System.currentTimeMillis() - beginStartTime;
@@ -1325,27 +1326,18 @@ public class DefaultMQProducerImpl implements MQProducerInner {
             this.sendDefaultImpl(msg, CommunicationMode.ASYNC, new SendCallback() {
                 @Override
                 public void onSuccess(SendResult sendResult) {
-                    requestResponseFuture.setSendReqeustOk(true);
+                    requestResponseFuture.setSendRequestOk(true);
                 }
 
                 @Override
                 public void onException(Throwable e) {
-                    requestResponseFuture.setSendReqeustOk(false);
+                    requestResponseFuture.setSendRequestOk(false);
                     requestResponseFuture.putResponseMessage(null);
                     requestResponseFuture.setCause(e);
                 }
             }, timeout - cost);
 
-            Message responseMessage = requestResponseFuture.waitResponseMessage(timeout - cost);
-            if (responseMessage == null) {
-                if (requestResponseFuture.isSendRequestOk()) {
-                    throw new RequestTimeoutException(ClientErrorCode.REQUEST_TIMEOUT_EXCEPTION,
-                        "send request message to <" + msg.getTopic() + "> OK, but wait reply message timeout, " + timeout + " ms.");
-                } else {
-                    throw new MQClientException("send request message to <" + msg.getTopic() + "> fail", requestResponseFuture.getCause());
-                }
-            }
-            return responseMessage;
+            return waitResponse(msg, timeout, requestResponseFuture, cost);
         } finally {
             RequestFutureTable.getRequestFutureTable().remove(correlationId);
         }
@@ -1364,7 +1356,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         this.sendDefaultImpl(msg, CommunicationMode.ASYNC, new SendCallback() {
             @Override
             public void onSuccess(SendResult sendResult) {
-                requestResponseFuture.setSendReqeustOk(true);
+                requestResponseFuture.setSendRequestOk(true);
             }
 
             @Override
@@ -1390,27 +1382,18 @@ public class DefaultMQProducerImpl implements MQProducerInner {
             this.sendSelectImpl(msg, selector, arg, CommunicationMode.ASYNC, new SendCallback() {
                 @Override
                 public void onSuccess(SendResult sendResult) {
-                    requestResponseFuture.setSendReqeustOk(true);
+                    requestResponseFuture.setSendRequestOk(true);
                 }
 
                 @Override
                 public void onException(Throwable e) {
-                    requestResponseFuture.setSendReqeustOk(false);
+                    requestResponseFuture.setSendRequestOk(false);
                     requestResponseFuture.putResponseMessage(null);
                     requestResponseFuture.setCause(e);
                 }
             }, timeout - cost);
 
-            Message responseMessage = requestResponseFuture.waitResponseMessage(timeout - cost);
-            if (responseMessage == null) {
-                if (requestResponseFuture.isSendRequestOk()) {
-                    throw new RequestTimeoutException(ClientErrorCode.REQUEST_TIMEOUT_EXCEPTION,
-                        "send request message to <" + msg.getTopic() + "> OK, but wait reply message timeout, " + timeout + " ms.");
-                } else {
-                    throw new MQClientException("send request message to <" + msg.getTopic() + "> fail", requestResponseFuture.getCause());
-                }
-            }
-            return responseMessage;
+            return waitResponse(msg, timeout, requestResponseFuture, cost);
         } finally {
             RequestFutureTable.getRequestFutureTable().remove(correlationId);
         }
@@ -1430,7 +1413,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         this.sendSelectImpl(msg, selector, arg, CommunicationMode.ASYNC, new SendCallback() {
             @Override
             public void onSuccess(SendResult sendResult) {
-                requestResponseFuture.setSendReqeustOk(true);
+                requestResponseFuture.setSendRequestOk(true);
             }
 
             @Override
@@ -1456,30 +1439,34 @@ public class DefaultMQProducerImpl implements MQProducerInner {
             this.sendKernelImpl(msg, mq, CommunicationMode.ASYNC, new SendCallback() {
                 @Override
                 public void onSuccess(SendResult sendResult) {
-                    requestResponseFuture.setSendReqeustOk(true);
+                    requestResponseFuture.setSendRequestOk(true);
                 }
 
                 @Override
                 public void onException(Throwable e) {
-                    requestResponseFuture.setSendReqeustOk(false);
+                    requestResponseFuture.setSendRequestOk(false);
                     requestResponseFuture.putResponseMessage(null);
                     requestResponseFuture.setCause(e);
                 }
             }, null, timeout - cost);
 
-            Message responseMessage = requestResponseFuture.waitResponseMessage(timeout - cost);
-            if (responseMessage == null) {
-                if (requestResponseFuture.isSendRequestOk()) {
-                    throw new RequestTimeoutException(ClientErrorCode.REQUEST_TIMEOUT_EXCEPTION,
-                        "send request message to <" + msg.getTopic() + "> OK, but wait reply message timeout, " + timeout + " ms.");
-                } else {
-                    throw new MQClientException("send request message to <" + msg.getTopic() + "> fail", requestResponseFuture.getCause());
-                }
-            }
-            return responseMessage;
+            return waitResponse(msg, timeout, requestResponseFuture, cost);
         } finally {
             RequestFutureTable.getRequestFutureTable().remove(correlationId);
         }
+    }
+
+    private Message waitResponse(Message msg, long timeout, RequestResponseFuture requestResponseFuture, long cost) throws InterruptedException, RequestTimeoutException, MQClientException {
+        Message responseMessage = requestResponseFuture.waitResponseMessage(timeout - cost);
+        if (responseMessage == null) {
+            if (requestResponseFuture.isSendRequestOk()) {
+                throw new RequestTimeoutException(ClientErrorCode.REQUEST_TIMEOUT_EXCEPTION,
+                    "send request message to <" + msg.getTopic() + "> OK, but wait reply message timeout, " + timeout + " ms.");
+            } else {
+                throw new MQClientException("send request message to <" + msg.getTopic() + "> fail", requestResponseFuture.getCause());
+            }
+        }
+        return responseMessage;
     }
 
     public void request(final Message msg, final MessageQueue mq, final RequestCallback requestCallback, long timeout)
@@ -1495,7 +1482,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         this.sendKernelImpl(msg, mq, CommunicationMode.ASYNC, new SendCallback() {
             @Override
             public void onSuccess(SendResult sendResult) {
-                requestResponseFuture.setSendReqeustOk(true);
+                requestResponseFuture.setSendRequestOk(true);
             }
 
             @Override
@@ -1509,7 +1496,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
     private void requestFail(final String correlationId) {
         RequestResponseFuture responseFuture = RequestFutureTable.getRequestFutureTable().remove(correlationId);
         if (responseFuture != null) {
-            responseFuture.setSendReqeustOk(false);
+            responseFuture.setSendRequestOk(false);
             responseFuture.putResponseMessage(null);
             try {
                 responseFuture.executeRequestCallback();
